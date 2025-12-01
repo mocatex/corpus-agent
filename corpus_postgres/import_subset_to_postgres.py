@@ -69,7 +69,7 @@ def import_file(con: duckdb.DuckDBPyConnection,
                 f"| {rate:,.0f} rows/s, ETA ~ {eta_sec / 60:.1f} min"
             )
 
-    print(f"=== Done {parquet_path.name}: {imported} rows imported ===")
+    print(f"=== Done {parquet_path.name}: {imported_in_file} rows imported ===")
 
 
 def main():
