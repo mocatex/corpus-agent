@@ -1,0 +1,40 @@
+version: "3.9"
+
+services:
+  postgres:
+    image: postgres:16
+    container_name: corpus_postgres
+    environment:
+      POSTGRES_USER: corpus
+      POSTGRES_PASSWORD: corpus
+      POSTGRES_DB: corpus_db
+    ports:
+      - "5432:5432"
+    volumes:
+      - ../dataset/pgdata:/var/lib/postgresql/data
+      - ../dataset/CC-News-sample:/data/subset
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U corpus -d corpus_db"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  opensearch:
+    image: opensearchproject/opensearch:2.15.0
+    container_name: os_news
+    environment:
+      - discovery.type=single-node
+      - OPENSEARCH_JAVA_OPTS=-Xms2g -Xmx2g
+      - OPENSEARCH_INITIAL_ADMIN_PASSWORD=VerySecurePassword123!
+    ports:
+      - "9200:9200"
+      - "9600:9600"
+
+  opensearch-dashboards:
+    image: opensearchproject/opensearch-dashboards:2.15.0
+    container_name: os_dash
+    environment:
+      - OPENSEARCH_HOSTS=["https://opensearch:9200"]
+      - OPENSEARCH_SSL_VERIFICATIONMODE=none
+    ports:
+      - "5601:5601"
