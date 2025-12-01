@@ -1,0 +1,16 @@
+[project]
+name = "corpus-agent"
+version = "0.1.0"
+description = "agent-based large dataset exploration using LLMs"
+requires-python = ">=3.12"
+dependencies = [
+    "duckdb>=1.4.2",
+    "matplotlib>=3.10.7",
+    "numpy>=2.3.5",
+    "openai>=2.8.1",
+    "pandas>=2.3.3",
+    "psycopg2-binary>=2.9.11",
+    "psycopg[binary]>=3.3.0",
+    "python-dotenv>=1.2.1",
+    "streamlit>=1.51.0",
+]

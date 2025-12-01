@@ -1,4 +1,4 @@
-# CorpusAgent - explore large datasets with LLMs in a agent-based way
+# CorpusAgent - explore large datasets with LLMs in an agent-based way
 
 ## Setup
 
