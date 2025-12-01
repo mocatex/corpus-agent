@@ -6,7 +6,7 @@
 echo -e "Setting up the dataset..."
 
 # changing the working directory
-cd ../dataset || { echo -e "Directory not found"; exit 1; }
+cd ../corpus_postgres || { echo -e "Directory not found"; exit 1; }
 
 # setup Docker environment
 echo -e "Setting up Docker environment..."
