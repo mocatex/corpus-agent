@@ -15,7 +15,7 @@ echo -e "Docker environment set up.\n"
 
 # activate the virtual environment
 echo -e "Activating virtual environment..."
-source ../venv/bin/activate || { echo -e "Failed to activate virtual environment"; exit 1; }
+source ../.venv/bin/activate || { echo -e "Failed to activate virtual environment"; exit 1; }
 echo -e "Virtual environment activated.\n"
 
 # setup DB schema in Docker
