@@ -44,6 +44,100 @@ tools = [
     },
 ]
 
+# --- Corpus compatibility assessment ---
+def assess_corpus_compatibility(question: str) -> dict:
+    """
+    Let the LLM decide whether the question can be reasonably answered
+    from a corpus that only covers news between 2016 and 2021.
+
+    This is needed for questions without explicit years (e.g., historical events),
+    where we still want the system to say: 'out of corpus range'.
+    """
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a temporal scope classifier for a news analytics thesis system. "
+                "The underlying corpus contains ONLY news articles from 2016 to 2021. "
+                "Given a user question, you must decide whether a reasonable answer could be derived "
+                "mainly from news coverage in 2016–2021. "
+                "Examples of NOT answerable from this corpus: questions about John F. Kennedy's election campaign, "
+                "World War II, the fall of the Berlin Wall, or time ranges like 'from 2002 to 2008'. "
+                "If the question focuses on events, people, or time spans clearly outside 2016–2021, "
+                "mark it as not answerable from this corpus. "
+                "If it spans a long period but includes 2016–2021 (e.g., 'from 2000 to 2020'), consider it answerable, "
+                "but note that only the 2016–2021 part can be covered. "
+                "Return ONLY a JSON object with the schema: "
+                "{ "
+                "  'can_answer_from_corpus': boolean, "
+                "  'primary_time_period': string, "
+                "  'explanation': string "
+                "}."
+            ),
+        },
+        {
+            "role": "user",
+            "content": question,
+        },
+    ]
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    assessment = json.loads(resp.choices[0].message.content)
+    return assessment
+
+def plan_summarization(question: str, retrieval_result: dict) -> dict:
+    """
+    Let the LLM decide how many docs per year to summarize (budget),
+    based on question difficulty and document distribution.
+    """
+    documents = retrieval_result.get("documents", [])
+    docs_by_year = {}
+    for doc in documents:
+        year = doc.get("year", "unknown")
+        docs_by_year.setdefault(year, 0)
+        docs_by_year[year] += 1
+
+    summary = {
+        "question": question,
+        "total_documents": len(documents),
+        "docs_per_year": docs_by_year,
+        "difficulty": retrieval_result.get("retrieval_plan", {}).get("difficulty"),
+    }
+
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "You are a summarization budget planner for a temporal news analytics system. "
+                "Given the question, its difficulty, and the number of documents per year, "
+                "decide how many documents per year should be passed into the LLM summarizer. "
+                "Trade-off: more docs -> richer summaries but higher cost. "
+                "Rules: "
+                "- For 'simple' questions, prefer 1–3 docs per year. "
+                "- For 'moderate', 3–5 docs per year. "
+                "- For 'hard', 5–10 docs per year, but keep total across all years under ~60 docs if possible. "
+                "Return ONLY JSON with schema: "
+                "{ 'max_docs_per_year': integer, 'reasoning': string }."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(summary),
+        },
+    ]
+
+    resp = client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=messages,
+        response_format={"type": "json_object"},
+    )
+    plan = json.loads(resp.choices[0].message.content)
+    return plan
+
 def retrieve_documents(q: str):
     messages = [
         {
@@ -269,13 +363,19 @@ def mock_nlp_tool_outputs(retrieval_result: dict, nlp_plan: dict) -> dict:
     return outputs
 
 
-def summarize_documents_per_year(question: str, retrieval_result: dict, max_docs_per_year: int = 3) -> dict:
+def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
     """
     Use the LLM to create short summaries per year, based on a small subset
-    of documents from that year. This further compresses the top-k documents
-    into year-level context for the final answer step.
+    of documents from that year. The number of docs per year is chosen
+    by a separate summarization planning step.
     """
     documents = retrieval_result.get("documents", [])
+
+    # LLM decides how many docs/year
+    summarization_plan = plan_summarization(question, retrieval_result)
+    max_docs_per_year = int(summarization_plan.get("max_docs_per_year", 3))
+    print(f"[Summarization] Using max_docs_per_year={max_docs_per_year}")
+    # you can also return summarization_plan in run_thesis_pipeline for debugging
 
     # Group docs by year
     docs_by_year = {}
@@ -357,41 +457,63 @@ def synthesize_final_answer(question: str, year_summaries: dict, nlp_plan: dict,
     return resp.choices[0].message.content.strip()
 
 def run_thesis_pipeline(q: str) -> dict:
-    """
-    High-level pipeline for the thesis:
-
-    1) Use the retrieval planner (with tool calls) to get OpenSearch hits and Postgres documents.
-    2) Use a separate planner to mock which NLP tools would be run on the retrieved data.
-    3) Mock the outputs of the selected NLP tools (no real heavy NLP).
-    4) Summarize the retrieved documents into compact, year-level summaries.
-    5) Let the LLM synthesize a final answer based ONLY on those summaries and analytics.
-    """
     print(f"=== Running thesis pipeline for question: {q!r} ===")
+
+    scope_assessment = assess_corpus_compatibility(q)
+    print("[Scope] Corpus compatibility assessment:", scope_assessment)
+
+    if not scope_assessment.get("can_answer_from_corpus", True):
+        final_answer = (
+            "I cannot reliably answer this question from the thesis corpus, because it focuses on news articles "
+            "from 2016 to 2021, while your question is primarily about a different time period. "
+            f"{scope_assessment.get('explanation', '')} "
+            "To answer this properly, I would need a corpus that includes the relevant years."
+        )
+        return {
+            "question": q,
+            "retrieval": {
+                "tool_calls": [],
+                "search_results": [],
+                "documents": [],
+            },
+            "retrieval_plan": {},
+            "nlp_plan": None,
+            "mocked_tool_outputs": {},
+            "year_summaries": {},
+            "final_answer": final_answer,
+            "scope_assessment": scope_assessment,
+        }
+
     retrieval_result = retrieve_documents(q)
+    retrieval_plan = retrieval_result.get("retrieval_plan", {})
+    print("[Plan] Retrieval plan:", retrieval_plan)
+
     print(
-        f"Retrieval summary -> tool_calls: {len(retrieval_result['tool_calls'])}, "
+        f"Retrieval summary -> "
         f"search_results: {len(retrieval_result['search_results'])}, "
         f"documents: {len(retrieval_result['documents'])}"
     )
 
     nlp_plan = plan_nlp_analysis(q, retrieval_result)
-    print("NLP plan (mocked):", nlp_plan)
+    print("[Plan] NLP plan (mocked):", nlp_plan)
 
     mocked_tool_outputs = mock_nlp_tool_outputs(retrieval_result, nlp_plan)
-    print("Mocked NLP tool outputs keys:", list(mocked_tool_outputs.keys()))
+    print("[Mock NLP] Outputs keys:", list(mocked_tool_outputs.keys()))
 
-    year_summaries = summarize_documents_per_year(q, retrieval_result, max_docs_per_year=3)
-    print("Year-level summaries created for years:", list(year_summaries.keys()))
+    year_summaries = summarize_documents_per_year(q, retrieval_result)
+    print("[Summaries] Years:", list(year_summaries.keys()))
 
     final_answer = synthesize_final_answer(q, year_summaries, nlp_plan, mocked_tool_outputs)
 
     return {
         "question": q,
         "retrieval": retrieval_result,
+        "retrieval_plan": retrieval_plan,
         "nlp_plan": nlp_plan,
         "mocked_tool_outputs": mocked_tool_outputs,
         "year_summaries": year_summaries,
         "final_answer": final_answer,
+        "scope_assessment": scope_assessment,
     }
 
 if __name__ == "__main__":
