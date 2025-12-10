@@ -1,8 +1,17 @@
-# rag_llm_pipeline.py
+"""
+This module implements a multi-step pipeline for a temporal news analytics thesis system.
+It uses OpenAI's LLM to assess corpus compatibility, plan document retrieval,
+plan NLP analysis, and synthesize final answers. It integrates with OpenSearch
+and Postgres for document retrieval, and includes mocked NLP tool outputs.
+"""
+
 from openai import OpenAI
+from dotenv import load_dotenv
 from tools_backend import search_opensearch, fetch_articles_postgres
 import json
 import os
+
+load_dotenv()
 
 client = OpenAI()
 

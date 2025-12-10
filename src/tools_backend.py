@@ -1,3 +1,8 @@
+"""
+This module contains functions to connect to OpenSearch and Postgres.
+Fetches articles from Postgres by ID and searches OpenSearch.
+"""
+
 from typing import List, Dict, Any
 from opensearchpy import OpenSearch
 import psycopg2
