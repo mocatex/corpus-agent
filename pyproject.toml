@@ -8,6 +8,7 @@ dependencies = [
     "matplotlib>=3.10.7",
     "numpy>=2.3.5",
     "openai>=2.8.1",
+    "opensearch-py>=3.1.0",
     "pandas>=2.3.3",
     "psycopg2-binary>=2.9.11",
     "psycopg[binary]>=3.3.0",
