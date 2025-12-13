@@ -7,14 +7,18 @@ and Postgres for document retrieval, and includes mocked NLP tool outputs.
 
 from openai import OpenAI
 from dotenv import load_dotenv
-from tools_backend import search_opensearch, fetch_articles_postgres
+from tools_backend import (
+    search_opensearch,
+    fetch_articles_postgres,
+    store_run_articles
+)
 import json
 import os
+import uuid
 
 load_dotenv()
 
 client = OpenAI()
-
 
 print("API KEY LOADED:", os.getenv("OPENAI_API_KEY") is not None)
 
@@ -52,6 +56,7 @@ tools = [
         },
     },
 ]
+
 
 # --- Corpus compatibility assessment ---
 def assess_corpus_compatibility(question: str) -> dict:
@@ -97,6 +102,7 @@ def assess_corpus_compatibility(question: str) -> dict:
     )
     assessment = json.loads(resp.choices[0].message.content)
     return assessment
+
 
 def plan_summarization(question: str, retrieval_result: dict) -> dict:
     """
@@ -147,6 +153,7 @@ def plan_summarization(question: str, retrieval_result: dict) -> dict:
     plan = json.loads(resp.choices[0].message.content)
     return plan
 
+
 def retrieve_documents(q: str):
     messages = [
         {
@@ -192,7 +199,7 @@ def retrieve_documents(q: str):
                 )
                 search_results.extend(result)
 
-        #After OpenSearch, we decide to fetch from Postgres:
+        # After OpenSearch, we decide to fetch from Postgres:
         if search_results:
             ids = [hit["id"] for hit in search_results]
             print(f"Fetching {len(ids)} documents from Postgres...")
@@ -212,6 +219,7 @@ def retrieve_documents(q: str):
         "search_results": [],
         "documents": [],
     }
+
 
 def plan_nlp_analysis(question: str, retrieval_result: dict) -> dict:
     """
@@ -406,19 +414,20 @@ def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
             context_chunks.append(f"TITLE: {title}\nTEXT: {body[:2000]}")
 
         prompt = (
-            "You are a news summarizer for a temporal analytics thesis. "
-            "Given a user question and several news articles from a single year, "
-            "write a concise 3–5 sentence summary of how that year's coverage relates to the question. "
-            "Focus on main themes, sentiment and notable events; do not invent facts.\n\n"
-            f"User question: {question}\n"
-            f"Year: {year}\n\n"
-            "Articles:\n" + "\n\n".join(context_chunks)
+                "You are a news summarizer for a temporal analytics thesis. "
+                "Given a user question and several news articles from a single year, "
+                "write a concise 3–5 sentence summary of how that year's coverage relates to the question. "
+                "Focus on main themes, sentiment and notable events; do not invent facts.\n\n"
+                f"User question: {question}\n"
+                f"Year: {year}\n\n"
+                "Articles:\n" + "\n\n".join(context_chunks)
         )
 
         resp = client.chat.completions.create(
             model="gpt-4o-mini",
             messages=[
-                {"role": "system", "content": "You summarize news articles with a focus on temporal trends and perception."},
+                {"role": "system",
+                 "content": "You summarize news articles with a focus on temporal trends and perception."},
                 {"role": "user", "content": prompt},
             ],
         )
@@ -465,8 +474,11 @@ def synthesize_final_answer(question: str, year_summaries: dict, nlp_plan: dict,
     )
     return resp.choices[0].message.content.strip()
 
+
 def run_thesis_pipeline(q: str) -> dict:
     print(f"=== Running thesis pipeline for question: {q!r} ===")
+
+    run_id = str(uuid.uuid4())
 
     scope_assessment = assess_corpus_compatibility(q)
     print("[Scope] Corpus compatibility assessment:", scope_assessment)
@@ -479,6 +491,7 @@ def run_thesis_pipeline(q: str) -> dict:
             "To answer this properly, I would need a corpus that includes the relevant years."
         )
         return {
+            "run_id": run_id,
             "question": q,
             "retrieval": {
                 "tool_calls": [],
@@ -496,6 +509,8 @@ def run_thesis_pipeline(q: str) -> dict:
     retrieval_result = retrieve_documents(q)
     retrieval_plan = retrieval_result.get("retrieval_plan", {})
     print("[Plan] Retrieval plan:", retrieval_plan)
+
+    store_run_articles(run_id=run_id, question=q, search_results=retrieval_result.get("search_results", []))
 
     print(
         f"Retrieval summary -> "
@@ -515,6 +530,7 @@ def run_thesis_pipeline(q: str) -> dict:
     final_answer = synthesize_final_answer(q, year_summaries, nlp_plan, mocked_tool_outputs)
 
     return {
+        "run_id": run_id,
         "question": q,
         "retrieval": retrieval_result,
         "retrieval_plan": retrieval_plan,
@@ -524,6 +540,7 @@ def run_thesis_pipeline(q: str) -> dict:
         "final_answer": final_answer,
         "scope_assessment": scope_assessment,
     }
+
 
 if __name__ == "__main__":
     q = "How has the perception of Instagram changed over the course of 2016?"
