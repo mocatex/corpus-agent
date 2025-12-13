@@ -38,23 +38,6 @@ tools = [
             },
         },
     },
-    {
-        "type": "function",
-        "function": {
-            "name": "fetch_articles_postgres",
-            "description": "Fetch full article texts and metadata for given article IDs from Postgres.",
-            "parameters": {
-                "type": "object",
-                "properties": {
-                    "ids": {
-                        "type": "array",
-                        "items": {"type": "integer"},
-                    }
-                },
-                "required": ["ids"],
-            },
-        },
-    },
 ]
 
 
@@ -163,7 +146,6 @@ def retrieve_documents(q: str, run_id: str):
                 "Given a user question, decide whether you need to call tools. When you call tools, your goal is to: "
                 "1) Formulate a focused keyword query that reflects the entities, topics, and temporal scope in the question. "
                 "2) Use search_opensearch with a reasonable top_k (ideally <= 100) to retrieve document IDs. "
-                "3) Optionally call fetch_articles_postgres to turn those IDs into full documents. "
                 "Do NOT try to answer the question yourself in this step; just plan retrieval via tools. "
                 "If the question refers to years outside 2016–2021, conceptually restrict retrieval to content from 2016–2021, as the corpus only covers that range."
             )
