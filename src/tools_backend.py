@@ -61,25 +61,6 @@ def search_opensearch(query: str, top_k: int = 1000) -> List[Dict[str, Any]]:
         for hit in hits
     ]
 
-def fetch_articles_postgres(ids: List[int]) -> List[Dict[str, Any]]:
-    """
-    Fetch article rows by ID from Postgres.
-    """
-    if not ids:
-        return []
-
-    with pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-        cur.execute(
-            """
-            SELECT id, title, body , source_domain, year
-            FROM article_corpus
-            WHERE id = ANY(%s);
-            """,
-            (ids,),
-        )
-        rows = cur.fetchall()
-    return [dict(row) for row in rows]
-
 def fetch_run_documents_postgres(run_id: str, limit: int | None = None) -> List[Dict[str, Any]]:
     """
     Fetch documents for a given pipeline run by joining pipeline_run_articles -> article_corpus.
