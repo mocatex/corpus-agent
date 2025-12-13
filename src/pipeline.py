@@ -9,7 +9,7 @@ from openai import OpenAI
 from dotenv import load_dotenv
 from tools_backend import (
     search_opensearch,
-    fetch_articles_postgres,
+    fetch_run_documents_postgres,
     store_run_articles
 )
 import json
@@ -154,7 +154,7 @@ def plan_summarization(question: str, retrieval_result: dict) -> dict:
     return plan
 
 
-def retrieve_documents(q: str):
+def retrieve_documents(q: str, run_id: str):
     messages = [
         {
             "role": "system",
@@ -201,9 +201,9 @@ def retrieve_documents(q: str):
 
         # After OpenSearch, we decide to fetch from Postgres:
         if search_results:
-            ids = [hit["id"] for hit in search_results]
-            print(f"Fetching {len(ids)} documents from Postgres...")
-            documents = fetch_articles_postgres(ids=ids)
+            store_run_articles(run_id=run_id, question=q, search_results=search_results)
+            documents = fetch_run_documents_postgres(run_id=run_id)
+            print(f"Loaded {len(documents)} documents from DB for run_id={run_id}")
         else:
             documents = []
 
@@ -506,7 +506,8 @@ def run_thesis_pipeline(q: str) -> dict:
             "scope_assessment": scope_assessment,
         }
 
-    retrieval_result = retrieve_documents(q)
+    run_id = str(uuid.uuid4())
+    retrieval_result = retrieve_documents(q, run_id=run_id)
     retrieval_plan = retrieval_result.get("retrieval_plan", {})
     print("[Plan] Retrieval plan:", retrieval_plan)
 
