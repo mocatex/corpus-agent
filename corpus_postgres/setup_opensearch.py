@@ -9,13 +9,15 @@ urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 PG_DSN = "dbname=corpus_db user=corpus password=corpus host=localhost port=5432"
 OS_URL = "https://localhost:9200/article-corpus-opensearch/_bulk"  # HTTPS now
-OS_AUTH = ("admin", "VerySecurePassword123!")          # Your admin login
+OS_AUTH = ("admin", "VerySecurePassword123!")  # Your admin login
+
 
 def get_total_row_count():
     with psycopg2.connect(PG_DSN) as conn:
         with conn.cursor() as cur:
             cur.execute("SELECT COUNT(*) FROM article_corpus")
             return cur.fetchone()[0]
+
 
 def stream_rows(batch_size=5_000):
     conn = psycopg2.connect(PG_DSN)
@@ -33,6 +35,7 @@ def stream_rows(batch_size=5_000):
     cur.close()
     conn.close()
 
+
 def bulk_index():
     total_rows = get_total_row_count()
     print(f"Total rows to index: {total_rows}")
@@ -48,7 +51,7 @@ def bulk_index():
         lines = []
         for (id_, year, source_domain, title, body) in rows:
             # action line
-            lines.append(json.dumps({ "index": { "_id": id_ } }))
+            lines.append(json.dumps({"index": {"_id": id_}}))
             # source line
             lines.append(json.dumps({
                 "id": id_,
@@ -84,6 +87,7 @@ def bulk_index():
             )
 
     print("Done bulk indexing.")
+
 
 if __name__ == "__main__":
     bulk_index()

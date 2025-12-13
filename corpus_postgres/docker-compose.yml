@@ -14,7 +14,7 @@ services:
       - ../dataset/pgdata:/var/lib/postgresql/data
       - ../dataset/CC-News-sample:/data/subset
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U corpus -d corpus_db"]
+      test: [ "CMD-SHELL", "pg_isready -U corpus -d corpus_db" ]
       interval: 10s
       timeout: 5s
       retries: 5

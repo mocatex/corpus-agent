@@ -9,6 +9,7 @@ PG_CONNINFO = "host=localhost port=5432 dbname=corpus_db user=corpus password=co
 
 BATCH_ROWS = 20_000
 
+
 def import_file(con: duckdb.DuckDBPyConnection,
                 cur,
                 parquet_path: Path,

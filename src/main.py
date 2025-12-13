@@ -43,7 +43,6 @@ if prompt:
     # 6) Store pipeline internals for debugging
     st.session_state.debug_runs.append(pipeline_result)
 
-
 # --- Debug window / backend pipeline view ---
 st.markdown("---")
 with st.expander("🔧 Pipeline debug (latest run)", expanded=False):

@@ -69,11 +69,18 @@ def fetch_run_documents_postgres(run_id: str, limit: int | None = None) -> List[
     with pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT
-                ac.id, ac.title, ac.body, ac.source_domain, ac.year,
-                pra.rank, pra.os_score, pra.sentiment_score, pra.relevance_score, pra.extra_metadata
+            SELECT ac.id,
+                   ac.title,
+                   ac.body,
+                   ac.source_domain,
+                   ac.year,
+                   pra.rank,
+                   pra.os_score,
+                   pra.sentiment_score,
+                   pra.relevance_score,
+                   pra.extra_metadata
             FROM pipeline_run_articles pra
-            JOIN article_corpus ac ON ac.id = pra.article_id
+                     JOIN article_corpus ac ON ac.id = pra.article_id
             WHERE pra.run_id = %s
             ORDER BY pra.rank ASC
             """ + (" LIMIT %s" if limit is not None else ""),
