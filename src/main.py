@@ -58,8 +58,21 @@ with st.expander("🔧 Pipeline debug (latest run)", expanded=False):
         st.write(f"- Search results: {len(retrieval.get('search_results', []))}")
         st.write(f"- Retrieved documents: {len(retrieval.get('documents', []))}")
 
+        if "doc_selection_plan" in last:
+            st.write("### Document selection plan")
+            st.json(last["doc_selection_plan"])
+
         st.write("### NLP Plan")
         st.json(last.get("nlp_plan", {}))
+
+        extra_tools = last.get("nlp_plan", {}).get("desired_additional_tools", [])
+        if extra_tools:
+            st.write("### Additional NLP tools the planner would like to have")
+            st.json(extra_tools)
+
+        if "doc_selection_plan" in last:
+            st.write("### Document selection plan")
+            st.json(last["doc_selection_plan"])
 
         st.write("### Mocked NLP tool outputs (keys)")
         st.write(list(last.get("mocked_tool_outputs", {}).keys()))

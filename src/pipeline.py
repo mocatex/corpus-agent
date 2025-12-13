@@ -79,62 +79,13 @@ def assess_corpus_compatibility(question: str) -> dict:
     ]
 
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=messages,
         response_format={"type": "json_object"},
     )
     assessment = json.loads(resp.choices[0].message.content)
     return assessment
 
-
-def plan_summarization(question: str, retrieval_result: dict) -> dict:
-    """
-    Let the LLM decide how many docs per year to summarize (budget),
-    based on question difficulty and document distribution.
-    """
-    documents = retrieval_result.get("documents", [])
-    docs_by_year = {}
-    for doc in documents:
-        year = doc.get("year", "unknown")
-        docs_by_year.setdefault(year, 0)
-        docs_by_year[year] += 1
-
-    summary = {
-        "question": question,
-        "total_documents": len(documents),
-        "docs_per_year": docs_by_year,
-        "difficulty": retrieval_result.get("retrieval_plan", {}).get("difficulty"),
-    }
-
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You are a summarization budget planner for a temporal news analytics system. "
-                "Given the question, its difficulty, and the number of documents per year, "
-                "decide how many documents per year should be passed into the LLM summarizer. "
-                "Trade-off: more docs -> richer summaries but higher cost. "
-                "Rules: "
-                "- For 'simple' questions, prefer 1–3 docs per year. "
-                "- For 'moderate', 3–5 docs per year. "
-                "- For 'hard', 5–10 docs per year, but keep total across all years under ~60 docs if possible. "
-                "Return ONLY JSON with schema: "
-                "{ 'max_docs_per_year': integer, 'reasoning': string }."
-            ),
-        },
-        {
-            "role": "user",
-            "content": json.dumps(summary),
-        },
-    ]
-
-    resp = client.chat.completions.create(
-        model="gpt-4o-mini",
-        messages=messages,
-        response_format={"type": "json_object"},
-    )
-    plan = json.loads(resp.choices[0].message.content)
-    return plan
 
 
 def retrieve_documents(q: str, run_id: str):
@@ -154,7 +105,7 @@ def retrieve_documents(q: str, run_id: str):
     ]
 
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=messages,
         tools=tools,
         tool_choice="auto",
@@ -183,6 +134,21 @@ def retrieve_documents(q: str, run_id: str):
 
         # After OpenSearch, we decide to fetch from Postgres:
         if search_results:
+            # Build an ID -> score mapping if OpenSearch returns scores
+            score_by_id = {}
+            for hit in search_results:
+                doc_id = hit.get("id")
+                if doc_id is not None and "score" in hit:
+                    score_by_id[doc_id] = hit["score"]
+
+            ids = [hit["id"] for hit in search_results]
+            print(f"Fetching {len(ids)} documents from Postgres...")
+
+            # Attach BM25 scores to documents (if available)
+            for d in documents:
+                doc_id = d.get("id")
+                if doc_id in score_by_id:
+                    d["bm25_score"] = score_by_id[doc_id]
             store_run_articles(run_id=run_id, question=q, search_results=search_results)
             documents = fetch_run_documents_postgres(run_id=run_id)
             print(f"Loaded {len(documents)} documents from DB for run_id={run_id}")
@@ -237,10 +203,13 @@ def plan_nlp_analysis(question: str, retrieval_result: dict) -> dict:
                 "'document_clustering', 'keyphrase_evolution_tracking', "
                 "'anomaly_detection_in_discourse', 'confidence_scoring_of_results'. "
                 "You must return ONLY a valid JSON object with the following schema: "
-                "{ 'task_type': string, 'time_horizon': string, 'chosen_tools': [string], 'explanation': string }. "
+                "{ 'task_type': string, 'time_horizon': string, 'chosen_tools': [string], "
+                "  'explanation': string, 'desired_additional_tools': [string] }. "
                 "Rules: Select ONLY tools that are strictly necessary, do NOT include extra text outside the JSON, "
                 "keep the explanation concise (max. 2 sentences), set 'time_horizon' explicitly (e.g., '2016–2021', 'pre/post event', 'monthly over 5 years'), "
-                "and set 'task_type' to one of: ['descriptive', 'comparative', 'causal', 'predictive', 'exploratory']."
+                "and set 'task_type' to one of: ['descriptive', 'comparative', 'causal', 'predictive', 'exploratory']. "
+                "If you would like to use an NLP tool that is NOT in the available tools list, briefly describe it in natural language and add it to 'desired_additional_tools'. "
+                "If no extra tools are needed, return an empty list there."
             ),
         },
         {
@@ -250,7 +219,7 @@ def plan_nlp_analysis(question: str, retrieval_result: dict) -> dict:
     ]
 
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=messages,
         response_format={"type": "json_object"},
     )
@@ -362,6 +331,202 @@ def mock_nlp_tool_outputs(retrieval_result: dict, nlp_plan: dict) -> dict:
     return outputs
 
 
+def build_doc_metadata(documents: list[dict]) -> list[dict]:
+    """
+    Build lightweight semantic metadata for each document to help the LLM
+    select a subset. This does NOT include full text, only compact features.
+
+    The metadata schema is:
+
+    {
+      "doc_id": int,
+      "year": int | str,
+      "title": str,
+      "snippet": str,
+      "bm25_score": float | None,
+      "sentiment": { "label": str, "score": float },
+      "topics": [str],
+      "entities": { "ORG": [str], "PERSON": [str], "GPE": [str] },
+      "events": any,
+      "embedding_ref": str | None
+    }
+
+    Currently, sentiment, topics, entities, events and embeddings are mocked
+    or left empty; in a future version these fields will be populated by the
+    NLP analytics layer.
+    """
+    meta = []
+    topic_labels = ["Economy / Markets", "Technology / Innovation", "Politics / Regulation"]
+
+    for d in documents:
+        body = (d.get("body") or "")
+        length = len(body)
+        year = d.get("year", "unknown")
+
+        # Get Full Article Text to append
+        full_text = body.replace("\n", " ")
+
+        # Mock sentiment: deterministic from length
+        sentiment_score = (length % 800) / 400.0 - 1.0  # [-1, 1]
+        if sentiment_score < -0.3:
+            sentiment_label = "negative"
+        elif sentiment_score > 0.3:
+            sentiment_label = "positive"
+        else:
+            sentiment_label = "mixed/neutral"
+
+        # Mock topic: bucket by length
+        topic_label = topic_labels[length % len(topic_labels)]
+
+        meta.append(
+            {
+                "doc_id": d.get("id"),
+                "year": year,
+                "title": (d.get("title") or "")[:200],
+                "text": full_text,
+                "bm25_score": d.get("bm25_score"),
+                "sentiment": {
+                    "label": sentiment_label,
+                    "score": round(sentiment_score, 3),
+                },
+                "topics": [topic_label],
+                "entities": {
+                    "ORG": [],
+                    "PERSON": [],
+                    "GPE": [],
+                },
+                "events": None,
+                "embedding_ref": None,
+            }
+        )
+
+    return meta
+
+def select_documents_agentically(
+    question: str,
+    documents: list[dict],
+    max_docs_total: int = 30,
+    batch_size: int = 20,
+) -> dict:
+    """
+    Let the LLM decide which subset of retrieved documents should be kept
+    for summarization and final analysis.
+
+    Steps:
+    1) Simple algorithmic filtering (drop very short docs, filter invalid years).
+    2) Build compact semantic metadata for each remaining document.
+    3) Send the metadata to the LLM in batches and ask it to mark which
+       documents in each batch are relevant to the question.
+    4) Combine the per-batch decisions into a final set of selected IDs,
+       capped at max_docs_total.
+
+    The LLM sees only metadata (no full text): year, title, snippet, BM25 score,
+    mocked sentiment, topics, etc.
+    """
+
+    # --- 1) Simple algorithmic filtering ---
+    filtered_docs: list[dict] = []
+    for d in documents:
+        body = (d.get("body") or "")
+        if len(body) < 100:
+            # Drop super short documents
+            continue
+
+        year = d.get("year")
+        try:
+            if year is not None and year != "unknown":
+                year_int = int(year)
+                if year_int < 2016 or year_int > 2021:
+                    # Filter out years outside the corpus range as a safety net
+                    continue
+        except (TypeError, ValueError):
+            # If year cannot be parsed, keep the doc (or you could choose to skip it)
+            pass
+
+        filtered_docs.append(d)
+
+    # --- 2) Build metadata for the remaining docs ---
+    metadata = build_doc_metadata(filtered_docs)
+
+    # If there are fewer docs than the budget, just keep all
+    if len(metadata) <= max_docs_total:
+        return {
+            "selected_ids": [m["doc_id"] for m in metadata if m.get("doc_id") is not None],
+            "reasoning": "Number of filtered documents is already below the maximum budget; keeping all.",
+            "batches": [],
+        }
+
+    # --- 3) Batched LLM selection over metadata ---
+    batches = [
+        metadata[i : i + batch_size] for i in range(0, len(metadata), batch_size)
+    ]
+
+    all_relevant_ids = set()
+    batch_decisions = []
+
+    for batch_index, batch in enumerate(batches):
+        messages = [
+            {
+                "role": "system",
+                "content": (
+                    "You are a document selection planner for a temporal news analytics system. "
+                    "You are given a user question and a batch of news article metadata (doc_id, year, title, "
+                    "text, BM25 score, sentiment, topics, entities, etc.). "
+                    "Your task is to mark which documents in THIS BATCH are most relevant to the question. "
+                    "Focus on semantic relevance to the question, sentiment contrast when useful, and coverage "
+                    "of the key topics mentioned in the question. "
+                    "Return ONLY a JSON object with the schema: "
+                    "{ 'relevant_ids': [int], 'reasoning': string }."
+                ),
+            },
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "question": question,
+                        "batch_index": batch_index,
+                        "max_docs_total": max_docs_total,
+                        "documents": batch,
+                    }
+                ),
+            },
+        ]
+
+        resp = client.chat.completions.create(
+            model="gpt-5-mini",
+            messages=messages,
+            response_format={"type": "json_object"},
+        )
+        batch_plan = json.loads(resp.choices[0].message.content)
+        relevant_ids = [
+            doc_id for doc_id in batch_plan.get("relevant_ids", []) if doc_id is not None
+        ]
+        all_relevant_ids.update(relevant_ids)
+        batch_decisions.append(
+            {
+                "batch_index": batch_index,
+                "relevant_ids": relevant_ids,
+                "reasoning": batch_plan.get("reasoning", ""),
+            }
+        )
+
+    # --- 4) Cap at max_docs_total, preserving original metadata order ---
+    selected_ids_ordered: list[int] = []
+    relevant_id_set = set(all_relevant_ids)
+    for m in metadata:
+        doc_id = m.get("doc_id")
+        if doc_id in relevant_id_set:
+            selected_ids_ordered.append(doc_id)
+        if len(selected_ids_ordered) >= max_docs_total:
+            break
+
+    return {
+        "selected_ids": selected_ids_ordered,
+        "reasoning": "Batched LLM-based selection over filtered metadata.",
+        "batches": batch_decisions,
+    }
+
+
 def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
     """
     Use the LLM to create short summaries per year, based on a small subset
@@ -369,12 +534,6 @@ def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
     by a separate summarization planning step.
     """
     documents = retrieval_result.get("documents", [])
-
-    # LLM decides how many docs/year
-    summarization_plan = plan_summarization(question, retrieval_result)
-    max_docs_per_year = int(summarization_plan.get("max_docs_per_year", 3))
-    print(f"[Summarization] Using max_docs_per_year={max_docs_per_year}")
-    # you can also return summarization_plan in run_thesis_pipeline for debugging
 
     # Group docs by year
     docs_by_year = {}
@@ -385,7 +544,7 @@ def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
     year_summaries = {}
 
     for year, docs in sorted(docs_by_year.items(), key=lambda x: x[0]):
-        subset = docs[:max_docs_per_year]
+        subset = docs
         if not subset:
             continue
 
@@ -406,7 +565,7 @@ def summarize_documents_per_year(question: str, retrieval_result: dict) -> dict:
         )
 
         resp = client.chat.completions.create(
-            model="gpt-4o-mini",
+            model="gpt-5-mini",
             messages=[
                 {"role": "system",
                  "content": "You summarize news articles with a focus on temporal trends and perception."},
@@ -451,7 +610,7 @@ def synthesize_final_answer(question: str, year_summaries: dict, nlp_plan: dict,
     ]
 
     resp = client.chat.completions.create(
-        model="gpt-4o-mini",
+        model="gpt-5-mini",
         messages=messages,
     )
     return resp.choices[0].message.content.strip()
@@ -488,6 +647,7 @@ def run_thesis_pipeline(q: str) -> dict:
             "scope_assessment": scope_assessment,
         }
 
+    # 1) Retrieval
     run_id = str(uuid.uuid4())
     retrieval_result = retrieve_documents(q, run_id=run_id)
     retrieval_plan = retrieval_result.get("retrieval_plan", {})
@@ -501,15 +661,31 @@ def run_thesis_pipeline(q: str) -> dict:
         f"documents: {len(retrieval_result['documents'])}"
     )
 
+    # 2) NLP planning and mocked tools
     nlp_plan = plan_nlp_analysis(q, retrieval_result)
     print("[Plan] NLP plan (mocked):", nlp_plan)
 
     mocked_tool_outputs = mock_nlp_tool_outputs(retrieval_result, nlp_plan)
     print("[Mock NLP] Outputs keys:", list(mocked_tool_outputs.keys()))
 
+    # 3) Agentic document selection
+    documents = retrieval_result.get("documents", [])
+    doc_selection_plan = select_documents_agentically(q, documents, max_docs_total=50)
+    print("[Selection] Document selection plan:", doc_selection_plan)
+
+    selected_ids = set(doc_selection_plan.get("selected_ids", []))
+    if selected_ids:
+        documents_filtered = [d for d in documents if d.get("id") in selected_ids]
+    else:
+        documents_filtered = documents  # fallback: keep all if selection fails
+
+    retrieval_result["documents"] = documents_filtered
+
+    # 4) Summarization
     year_summaries = summarize_documents_per_year(q, retrieval_result)
     print("[Summaries] Years:", list(year_summaries.keys()))
 
+    # 5) Final synthesis
     final_answer = synthesize_final_answer(q, year_summaries, nlp_plan, mocked_tool_outputs)
 
     return {
@@ -517,6 +693,7 @@ def run_thesis_pipeline(q: str) -> dict:
         "question": q,
         "retrieval": retrieval_result,
         "retrieval_plan": retrieval_plan,
+        "doc_selection_plan": doc_selection_plan,
         "nlp_plan": nlp_plan,
         "mocked_tool_outputs": mocked_tool_outputs,
         "year_summaries": year_summaries,
