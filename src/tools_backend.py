@@ -80,6 +80,28 @@ def fetch_articles_postgres(ids: List[int]) -> List[Dict[str, Any]]:
         rows = cur.fetchall()
     return [dict(row) for row in rows]
 
+def fetch_run_documents_postgres(run_id: str, limit: int | None = None) -> List[Dict[str, Any]]:
+    """
+    Fetch documents for a given pipeline run by joining pipeline_run_articles -> article_corpus.
+    Returns the same fields your pipeline expects, plus rank/os_score
+    """
+    with pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+        cur.execute(
+            """
+            SELECT
+                ac.id, ac.title, ac.body, ac.source_domain, ac.year,
+                pra.rank, pra.os_score, pra.sentiment_score, pra.relevance_score, pra.extra_metadata
+            FROM pipeline_run_articles pra
+            JOIN article_corpus ac ON ac.id = pra.article_id
+            WHERE pra.run_id = %s
+            ORDER BY pra.rank ASC
+            """ + (" LIMIT %s" if limit is not None else ""),
+            (run_id, limit) if limit is not None else (run_id,),
+        )
+        rows = cur.fetchall()
+    return [dict(r) for r in rows]
+
+
 def store_run_articles(
     run_id: str,
     question: str,
