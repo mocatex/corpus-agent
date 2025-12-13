@@ -80,4 +80,48 @@ def fetch_articles_postgres(ids: List[int]) -> List[Dict[str, Any]]:
         rows = cur.fetchall()
     return [dict(row) for row in rows]
 
+def store_run_articles(
+    run_id: str,
+    question: str,
+    search_results: List[Dict[str, Any]],
+) -> None:
+    """
+    Persist retrieved article hits for a single pipeline run into
+    the pipeline_run_articles temp table.
+
+    Later NLP tools can UPDATE sentiment_score / relevance_score etc.
+    """
+    if not search_results:
+        return
+
+    rows = []
+    for rank, hit in enumerate(search_results, start=1):
+        rows.append(
+            (
+                run_id,
+                question,
+                int(hit["id"]),
+                rank,
+                float(hit["score"]),
+            )
+        )
+
+    with pg_conn.cursor() as cur:
+        # make the function idempotent for the same run_id (optional but nice)
+        cur.execute(
+            "DELETE FROM pipeline_run_articles WHERE run_id = %s",
+            (run_id,),
+        )
+        psycopg2.extras.execute_values(
+            cur,
+            """
+            INSERT INTO pipeline_run_articles
+                (run_id, question, article_id, rank, os_score)
+            VALUES %s
+            """,
+            rows,
+        )
+    pg_conn.commit()
+
+
 
