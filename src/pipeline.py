@@ -10,17 +10,19 @@ from dotenv import load_dotenv
 from tools_backend import (
     search_opensearch,
     fetch_run_documents_postgres,
-    store_run_articles
+    store_run_articles,
+    update_run_articles_nlp_features,
+    set_run_articles_relevance,
+    store_run_metadata,
+    fetch_run_metadata,
 )
+from mocked_tools import mock_nlp_tool_outputs
 import json
 import os
 import uuid
 
 load_dotenv()
-
 client = OpenAI()
-
-print("API KEY LOADED:", os.getenv("OPENAI_API_KEY") is not None)
 
 tools = [
     {
@@ -134,21 +136,6 @@ def retrieve_documents(q: str, run_id: str):
 
         # After OpenSearch, we decide to fetch from Postgres:
         if search_results:
-            # Build an ID -> score mapping if OpenSearch returns scores
-            score_by_id = {}
-            for hit in search_results:
-                doc_id = hit.get("id")
-                if doc_id is not None and "score" in hit:
-                    score_by_id[doc_id] = hit["score"]
-
-            ids = [hit["id"] for hit in search_results]
-            print(f"Fetching {len(ids)} documents from Postgres...")
-
-            # Attach BM25 scores to documents (if available)
-            for d in documents:
-                doc_id = d.get("id")
-                if doc_id in score_by_id:
-                    d["bm25_score"] = score_by_id[doc_id]
             store_run_articles(run_id=run_id, question=q, search_results=search_results)
             documents = fetch_run_documents_postgres(run_id=run_id)
             print(f"Loaded {len(documents)} documents from DB for run_id={run_id}")
@@ -156,7 +143,7 @@ def retrieve_documents(q: str, run_id: str):
             documents = []
 
         return {
-            "tool_calls": msg.tool_calls,  # or a simplified version
+            "tool_calls": msg.tool_calls,
             "search_results": search_results,
             "documents": documents,
         }
@@ -227,108 +214,6 @@ def plan_nlp_analysis(question: str, retrieval_result: dict) -> dict:
     return plan
 
 
-def mock_nlp_tool_outputs(retrieval_result: dict, nlp_plan: dict) -> dict:
-    """
-    Very lightweight mocked execution of a subset of NLP tools.
-
-    This function does NOT run any real NLP. It only fabricates plausible-looking
-    outputs to demonstrate what the downstream analytics layer might see.
-    """
-    documents = retrieval_result.get("documents", [])
-    chosen_tools = nlp_plan.get("chosen_tools", [])
-
-    # Group documents by year (assuming Postgres returns 'year' in each row)
-    docs_by_year = {}
-    for doc in documents:
-        year = doc.get("year", "unknown")
-        docs_by_year.setdefault(year, []).append(doc)
-
-    outputs = {}
-
-    # --- Mock sentiment_over_time ---
-    if "sentiment_over_time" in chosen_tools:
-        series = []
-        for year, year_docs in sorted(docs_by_year.items(), key=lambda x: x[0]):
-            # Fake "sentiment" as a deterministic function of average body length
-            if year_docs:
-                lengths = [len((d.get("body") or "")) for d in year_docs]
-                avg_len = sum(lengths) / max(len(lengths), 1)
-                avg_sentiment = (avg_len % 800) / 400.0 - 1.0  # maps roughly to [-1, +1]
-            else:
-                avg_sentiment = 0.0
-            series.append(
-                {
-                    "year": year,
-                    "avg_sentiment": round(avg_sentiment, 3),
-                    "n_docs": len(year_docs),
-                }
-            )
-        outputs["sentiment_over_time"] = {"series": series}
-
-    # --- Mock topic_trend_over_time ---
-    if "topic_trend_over_time" in chosen_tools:
-        topics = []
-        for idx, label in enumerate(["Economy / Markets", "Technology / Innovation", "Politics / Regulation"], start=1):
-            timeline = []
-            for year, year_docs in sorted(docs_by_year.items(), key=lambda x: x[0]):
-                weight = (len(year_docs) + idx) % 10 / 10.0
-                timeline.append({"year": year, "weight": round(weight, 2)})
-            topics.append(
-                {
-                    "topic_id": idx,
-                    "label": label,
-                    "timeline": timeline,
-                }
-            )
-        outputs["topic_trend_over_time"] = {"topics": topics}
-
-    # --- Mock event_detection ---
-    if "event_detection" in chosen_tools:
-        events = []
-        for year, year_docs in sorted(docs_by_year.items(), key=lambda x: x[0]):
-            if not year_docs:
-                continue
-            # Just take the first document title as a "major event" placeholder
-            first_doc = year_docs[0]
-            events.append(
-                {
-                    "year": year,
-                    "title": first_doc.get("title", "Unknown event"),
-                    "approx_date": first_doc.get("date", f"{year}-01-01"),
-                    "evidence_doc_ids": [first_doc.get("id")],
-                }
-            )
-        outputs["event_detection"] = {"events": events}
-
-    # --- Mock salient_quote_extraction ---
-    if "salient_quote_extraction" in chosen_tools:
-        quotes = []
-        for doc in documents[:10]:
-            body = (doc.get("body") or "").replace("\n", " ")
-            snippet = body[:200]
-            if not snippet:
-                continue
-            quotes.append(
-                {
-                    "doc_id": doc.get("id"),
-                    "year": doc.get("year"),
-                    "quote": snippet + ("..." if len(body) > 200 else ""),
-                }
-            )
-        outputs["salient_quote_extraction"] = {"quotes": quotes}
-
-    # --- Mock volatility_of_sentiment ---
-    if "volatility_of_sentiment" in chosen_tools and "sentiment_over_time" in outputs:
-        series = outputs["sentiment_over_time"]["series"]
-        deltas = []
-        for i in range(1, len(series)):
-            prev = series[i - 1]["avg_sentiment"]
-            curr = series[i]["avg_sentiment"]
-            deltas.append(abs(curr - prev))
-        volatility = sum(deltas) / max(len(deltas), 1) if deltas else 0.0
-        outputs["volatility_of_sentiment"] = {"avg_delta": round(volatility, 3)}
-
-    return outputs
 
 
 def build_doc_metadata(documents: list[dict]) -> list[dict]:
@@ -342,8 +227,8 @@ def build_doc_metadata(documents: list[dict]) -> list[dict]:
       "doc_id": int,
       "year": int | str,
       "title": str,
-      "snippet": str,
-      "bm25_score": float | None,
+      "text": str,
+      "os_score": float | None,
       "sentiment": { "label": str, "score": float },
       "topics": [str],
       "entities": { "ORG": [str], "PERSON": [str], "GPE": [str] },
@@ -356,27 +241,25 @@ def build_doc_metadata(documents: list[dict]) -> list[dict]:
     NLP analytics layer.
     """
     meta = []
-    topic_labels = ["Economy / Markets", "Technology / Innovation", "Politics / Regulation"]
 
     for d in documents:
         body = (d.get("body") or "")
-        length = len(body)
         year = d.get("year", "unknown")
 
         # Get Full Article Text to append
         full_text = body.replace("\n", " ")
 
-        # Mock sentiment: deterministic from length
-        sentiment_score = (length % 800) / 400.0 - 1.0  # [-1, 1]
-        if sentiment_score < -0.3:
-            sentiment_label = "negative"
-        elif sentiment_score > 0.3:
-            sentiment_label = "positive"
-        else:
-            sentiment_label = "mixed/neutral"
+        extra = d.get("extra_metadata") or {}
+        mock_nlp = extra.get("mock_nlp") if isinstance(extra, dict) else {}
 
-        # Mock topic: bucket by length
-        topic_label = topic_labels[length % len(topic_labels)]
+        sentiment_score = d.get("sentiment_score")
+        sentiment_label = None
+
+        # label from DB if available
+        if isinstance(mock_nlp, dict):
+            sentiment_label = mock_nlp.get("sentiment_label")
+        topic_label = mock_nlp.get("topic") if isinstance(mock_nlp, dict) else None
+        emotion_label = mock_nlp.get("emotion") if isinstance(mock_nlp, dict) else None
 
         meta.append(
             {
@@ -384,12 +267,14 @@ def build_doc_metadata(documents: list[dict]) -> list[dict]:
                 "year": year,
                 "title": (d.get("title") or "")[:200],
                 "text": full_text,
-                "bm25_score": d.get("bm25_score"),
+                "bm25_score": d.get("os_score"),
+                "rank": d.get("rank"),
                 "sentiment": {
                     "label": sentiment_label,
                     "score": round(sentiment_score, 3),
                 },
                 "topics": [topic_label],
+                "emotion": emotion_label,
                 "entities": {
                     "ORG": [],
                     "PERSON": [],
@@ -406,7 +291,7 @@ def select_documents_agentically(
     question: str,
     documents: list[dict],
     max_docs_total: int = 30,
-    batch_size: int = 20,
+    batch_size: int = 50,
 ) -> dict:
     """
     Let the LLM decide which subset of retrieved documents should be kept
@@ -420,7 +305,7 @@ def select_documents_agentically(
     4) Combine the per-batch decisions into a final set of selected IDs,
        capped at max_docs_total.
 
-    The LLM sees only metadata (no full text): year, title, snippet, BM25 score,
+    The LLM sees metadata including full text: year, title, text, BM25/OS score,
     mocked sentiment, topics, etc.
     """
 
@@ -470,8 +355,8 @@ def select_documents_agentically(
                 "role": "system",
                 "content": (
                     "You are a document selection planner for a temporal news analytics system. "
-                    "You are given a user question and a batch of news article metadata (doc_id, year, title, "
-                    "text, BM25 score, sentiment, topics, entities, etc.). "
+                    "You are given a user question and a batch of PER-ARTICLE metadata (doc_id, year, title, "
+                    "text, BM25 score, rank, sentiment, topics, emotion, entities, etc.). "
                     "Your task is to mark which documents in THIS BATCH are most relevant to the question. "
                     "Focus on semantic relevance to the question, sentiment contrast when useful, and coverage "
                     "of the key topics mentioned in the question. "
@@ -634,11 +519,7 @@ def run_thesis_pipeline(q: str) -> dict:
         return {
             "run_id": run_id,
             "question": q,
-            "retrieval": {
-                "tool_calls": [],
-                "search_results": [],
-                "documents": [],
-            },
+            "retrieval": {"tool_calls": [], "search_results": [], "documents": []},
             "retrieval_plan": {},
             "nlp_plan": None,
             "mocked_tool_outputs": {},
@@ -647,46 +528,53 @@ def run_thesis_pipeline(q: str) -> dict:
             "scope_assessment": scope_assessment,
         }
 
-    # 1) Retrieval
-    run_id = str(uuid.uuid4())
+    # 1) Retrieval (writes pipeline_run_articles + loads initial documents)
     retrieval_result = retrieve_documents(q, run_id=run_id)
     retrieval_plan = retrieval_result.get("retrieval_plan", {})
-    print("[Plan] Retrieval plan:", retrieval_plan)
 
-    store_run_articles(run_id=run_id, question=q, search_results=retrieval_result.get("search_results", []))
+    documents = retrieval_result.get("documents", [])
 
-    print(
-        f"Retrieval summary -> "
-        f"search_results: {len(retrieval_result['search_results'])}, "
-        f"documents: {len(retrieval_result['documents'])}"
+    # 2) NLP planning + mocked tools (run-level)
+    nlp_plan = plan_nlp_analysis(q, retrieval_result)
+    mocked_tool_outputs = mock_nlp_tool_outputs(retrieval_result, nlp_plan)
+
+    store_run_metadata(
+        run_id=run_id,
+        question=q,
+        nlp_plan=nlp_plan,
+        mocked_tool_outputs=mocked_tool_outputs,
     )
 
-    # 2) NLP planning and mocked tools
-    nlp_plan = plan_nlp_analysis(q, retrieval_result)
-    print("[Plan] NLP plan (mocked):", nlp_plan)
+    # 2b) Per-article NLP features -> temp table
+    update_run_articles_nlp_features(run_id=run_id, documents=documents)
 
-    mocked_tool_outputs = mock_nlp_tool_outputs(retrieval_result, nlp_plan)
-    print("[Mock NLP] Outputs keys:", list(mocked_tool_outputs.keys()))
+    # Re-fetch to include sentiment_score / extra_metadata / os_score / rank (DB-backed)
+    documents = fetch_run_documents_postgres(run_id=run_id)
 
-    # 3) Agentic document selection
-    documents = retrieval_result.get("documents", [])
+    # 3) Agentic selection
     doc_selection_plan = select_documents_agentically(q, documents, max_docs_total=50)
-    print("[Selection] Document selection plan:", doc_selection_plan)
-
     selected_ids = set(doc_selection_plan.get("selected_ids", []))
-    if selected_ids:
-        documents_filtered = [d for d in documents if d.get("id") in selected_ids]
-    else:
-        documents_filtered = documents  # fallback: keep all if selection fails
 
-    retrieval_result["documents"] = documents_filtered
+    # After selection, update relevance scores in DB, set to 1.0 for selected, 0.0 for others
+    set_run_articles_relevance(run_id=run_id, selected_article_ids=list(selected_ids))
+
+    if selected_ids:
+        documents = [d for d in documents if d.get("id") in selected_ids]
+
+    # Put final docs back into retrieval_result for downstream summarization
+    retrieval_result["documents"] = documents
 
     # 4) Summarization
     year_summaries = summarize_documents_per_year(q, retrieval_result)
-    print("[Summaries] Years:", list(year_summaries.keys()))
 
-    # 5) Final synthesis
-    final_answer = synthesize_final_answer(q, year_summaries, nlp_plan, mocked_tool_outputs)
+    # 5) Final synthesis (use persisted run-level metadata if present)
+    run_meta = fetch_run_metadata(run_id=run_id) or {}
+    final_answer = synthesize_final_answer(
+        q,
+        year_summaries,
+        run_meta.get("nlp_plan", nlp_plan),
+        run_meta.get("mocked_tool_outputs", mocked_tool_outputs),
+    )
 
     return {
         "run_id": run_id,

@@ -18,3 +18,12 @@ CREATE TABLE IF NOT EXISTS pipeline_run_articles (
     extra_metadata  JSONB,
     PRIMARY KEY (run_id, article_id)
 );
+
+-- Stores metadata about each pipeline run --
+CREATE TABLE IF NOT EXISTS pipeline_runs (
+  run_id UUID PRIMARY KEY,
+  question TEXT NOT NULL,
+  nlp_plan JSONB,
+  mocked_tool_outputs JSONB,
+  created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
