@@ -18,7 +18,6 @@ from tools_backend import (
 )
 from mocked_tools import mock_nlp_tool_outputs
 import json
-import os
 import uuid
 
 load_dotenv()
@@ -543,6 +542,7 @@ def run_thesis_pipeline(q: str) -> dict:
         question=q,
         nlp_plan=nlp_plan,
         mocked_tool_outputs=mocked_tool_outputs,
+        final_answer="" # Placeholder; will be updated later
     )
 
     # 2b) Per-article NLP features -> temp table
@@ -574,6 +574,15 @@ def run_thesis_pipeline(q: str) -> dict:
         year_summaries,
         run_meta.get("nlp_plan", nlp_plan),
         run_meta.get("mocked_tool_outputs", mocked_tool_outputs),
+    )
+
+    # Update final answer in DB
+    store_run_metadata(
+        run_id=run_id,
+        question=q,
+        nlp_plan=nlp_plan,
+        mocked_tool_outputs=mocked_tool_outputs,
+        final_answer=final_answer
     )
 
     return {
