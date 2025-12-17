@@ -3,7 +3,7 @@ This module contains functions to connect to OpenSearch and Postgres.
 Fetches articles from Postgres by ID and searches OpenSearch.
 """
 
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from opensearchpy import OpenSearch
 import psycopg2
 import psycopg2.extras
@@ -48,7 +48,7 @@ def search_opensearch(query: str, top_k: int = 1000) -> List[Dict[str, Any]]:
             "query": {
                 "multi_match": {
                     "query": query,
-                    "fields": ["title", "text"]
+                    "fields": ["title", "body"]
                 }
             }
         }
@@ -279,26 +279,27 @@ def append_run_articles_extra_metadata(run_id: str, extra: Dict[str, Any]) -> No
         )
     pg_conn.commit()
 
-def store_run_metadata(run_id: str, question: str, nlp_plan: Dict[str, Any], mocked_tool_outputs: Dict[str, Any]) -> None:
+def store_run_metadata(run_id: str, question: str, nlp_plan: Dict[str, Any], mocked_tool_outputs: Dict[str, Any], final_answer: Optional[str]) -> None:
     """
     Store run-level metadata ONCE per run (nlp_plan + aggregated analytics).
     """
     with pg_conn.cursor() as cur:
         cur.execute(
             """
-            INSERT INTO pipeline_runs (run_id, question, nlp_plan, mocked_tool_outputs)
-            VALUES (%s, %s, CAST(%s AS jsonb), CAST(%s AS jsonb))
+            INSERT INTO pipeline_runs (run_id, question, nlp_plan, mocked_tool_outputs, final_answer)
+            VALUES (%s, %s, CAST(%s AS jsonb), CAST(%s AS jsonb), %s)
             ON CONFLICT (run_id)
-            DO UPDATE SET
-              question = EXCLUDED.question,
-              nlp_plan = EXCLUDED.nlp_plan,
-              mocked_tool_outputs = EXCLUDED.mocked_tool_outputs
+                DO UPDATE SET question            = EXCLUDED.question,
+                              nlp_plan            = EXCLUDED.nlp_plan,
+                              mocked_tool_outputs = EXCLUDED.mocked_tool_outputs,
+                              final_answer        = COALESCE(EXCLUDED.final_answer, pipeline_runs.final_answer),
             """,
             (
                 run_id,
                 question,
                 json.dumps(nlp_plan or {}),
                 json.dumps(mocked_tool_outputs or {}),
+                final_answer,
             ),
         )
 
@@ -309,7 +310,7 @@ def fetch_run_metadata(run_id: str) -> Dict[str, Any]:
     with pg_conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
         cur.execute(
             """
-            SELECT run_id, question, nlp_plan, mocked_tool_outputs, created_at
+            SELECT run_id, question, nlp_plan, mocked_tool_outputs, final_answer, created_at
             FROM pipeline_runs
             WHERE run_id = %s
             """,
