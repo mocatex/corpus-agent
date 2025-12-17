@@ -292,7 +292,7 @@ def store_run_metadata(run_id: str, question: str, nlp_plan: Dict[str, Any], moc
                 DO UPDATE SET question            = EXCLUDED.question,
                               nlp_plan            = EXCLUDED.nlp_plan,
                               mocked_tool_outputs = EXCLUDED.mocked_tool_outputs,
-                              final_answer        = COALESCE(EXCLUDED.final_answer, pipeline_runs.final_answer),
+                              final_answer        = COALESCE(EXCLUDED.final_answer, pipeline_runs.final_answer)
             """,
             (
                 run_id,
