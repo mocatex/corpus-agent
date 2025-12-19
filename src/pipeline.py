@@ -55,21 +55,31 @@ def assess_corpus_compatibility(question: str) -> dict:
         {
             "role": "system",
             "content": (
-                "You are a temporal scope classifier for a news analytics thesis system. "
-                "The underlying corpus contains ONLY news articles from 2016 to 2021. "
-                "Given a user question, you must decide whether a reasonable answer could be derived "
-                "mainly from news coverage in 2016–2021. "
-                "Examples of NOT answerable from this corpus: questions about John F. Kennedy's election campaign, "
-                "World War II, the fall of the Berlin Wall, or time ranges like 'from 2002 to 2008'. "
-                "If the question focuses on events, people, or time spans clearly outside 2016–2021, "
-                "mark it as not answerable from this corpus. "
-                "If it spans a long period but includes 2016–2021 (e.g., 'from 2000 to 2020'), consider it answerable, "
-                "but note that only the 2016–2021 part can be covered. "
-                "Return ONLY a JSON object with the schema: "
-                "{ "
-                "  'can_answer_from_corpus': boolean, "
-                "  'primary_time_period': string, "
-                "  'explanation': string "
+                "You are a temporal scope AND premise validator for a news analytics thesis system. "
+                "The underlying corpus contains ONLY real-world news articles from 2016 to 2021.\n\n"
+
+                "You must assess TWO things:\n"
+                "1) Temporal scope: whether the question can be answered mainly using news coverage from 2016–2021.\n"
+                "2) Premise validity: whether the question relies on events or facts that actually occurred in the real world.\n\n"
+
+                "If the question assumes a false, hypothetical, or counterfactual event "
+                "(e.g., a company IPO, spin-off, merger, or political event that never happened), "
+                "mark it as NOT answerable even if the time range is within 2016–2021.\n\n"
+
+                "Examples of NOT answerable:\n"
+                "- Questions about John F. Kennedy's election campaign or World War II (outside time range)\n"
+                "- Questions assuming events that never occurred (e.g., 'Amazon spinning off AWS via IPO in 2019')\n\n"
+
+                "If a question spans a long period but includes 2016–2021 "
+                "(e.g., 'from 2000 to 2020'), consider it answerable, "
+                "but note that only the 2016–2021 portion can be covered.\n\n"
+
+                "Return ONLY a JSON object with the following schema:\n"
+                "{\n"
+                "  'can_answer_from_corpus': boolean,\n"
+                "  'reason': 'ok' | 'out_of_time_range' | 'false_premise' | 'insufficient_specificity',\n"
+                "  'primary_time_period': string,\n"
+                "  'explanation': string\n"
                 "}."
             ),
         },
@@ -509,12 +519,37 @@ def run_thesis_pipeline(q: str) -> dict:
     print("[Scope] Corpus compatibility assessment:", scope_assessment)
 
     if not scope_assessment.get("can_answer_from_corpus", True):
-        final_answer = (
-            "I cannot reliably answer this question from the thesis corpus, because it focuses on news articles "
-            "from 2016 to 2021, while your question is primarily about a different time period. "
-            f"{scope_assessment.get('explanation', '')} "
-            "To answer this properly, I would need a corpus that includes the relevant years."
-        )
+        reason = scope_assessment.get("reason", "unknown")
+
+        if reason == "out_of_time_range":
+            final_answer = (
+                "I cannot reliably answer this question from the thesis corpus because it falls outside "
+                "the available time range (2016–2021). "
+                f"{scope_assessment.get('explanation', '')} "
+                "Answering this would require a corpus covering the relevant years."
+            )
+
+        elif reason == "false_premise":
+            final_answer = (
+                "I cannot reliably answer this question because it is based on a premise that does not "
+                "correspond to real-world events. "
+                f"{scope_assessment.get('explanation', '')} "
+                "While related topics may be covered in the corpus, the specific assumed event did not occur."
+            )
+
+        elif reason == "insufficient_specificity":
+            final_answer = (
+                "I cannot reliably answer this question because it lacks sufficient specificity to anchor "
+                "a corpus-based analysis. "
+                f"{scope_assessment.get('explanation', '')}"
+            )
+
+        else:
+            final_answer = (
+                "I cannot reliably answer this question from the available corpus. "
+                f"{scope_assessment.get('explanation', '')}"
+            )
+
         return {
             "run_id": run_id,
             "question": q,

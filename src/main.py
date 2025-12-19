@@ -70,9 +70,10 @@ with st.expander("🔧 Pipeline debug (latest run)", expanded=False):
             st.json(last["doc_selection_plan"])
 
         st.write("### NLP Plan")
-        st.json(last.get("nlp_plan", {}))
+        nlp_plan = last.get("nlp_plan") or {}
+        st.json(nlp_plan)
 
-        extra_tools = last.get("nlp_plan", {}).get("desired_additional_tools", [])
+        extra_tools = nlp_plan.get("desired_additional_tools", [])
         if extra_tools:
             st.write("### Additional NLP tools the planner would like to have")
             st.json(extra_tools)
